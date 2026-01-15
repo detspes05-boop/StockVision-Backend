@@ -3,21 +3,19 @@ from dotenv import load_dotenv
 import yfinance as yf
 from sqlalchemy import create_engine
 import pandas as pd
-import google.generativeai as genai
+from google import genai 
 import time
+import datetime # Import wajib untuk waktu
 
 # --- 1. LOAD RAHASIA ---
 load_dotenv()
 DB_URL = os.getenv("DB_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- 2. SETUP GEMINI AI ---
-genai.configure(api_key=GEMINI_API_KEY)
+# --- 2. SETUP CLIENT BARU ---
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# GUNAKAN GEMINI 1.5 FLASH (Kuota Gratis Paling Besar)
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-# --- 3. RSI ---
+# --- 3. RSI FUNCTION ---
 def calculate_rsi(series, period=14):
     delta = series.diff(1)
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -35,18 +33,26 @@ def get_ai_analysis(ticker, price, rsi):
     Jika RSI < 40 katakan 'Potensi BUY'. Jika RSI > 65 katakan 'Potensi SELL'.
     """
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-flash-latest', 
+            contents=prompt
+        )
         return response.text.strip()
     except Exception as e:
+        if "429" in str(e): return "Sinyal: Menunggu Kuota AI..."
         return f"Gagal analisa AI: {e}"
 
 # --- 5. SCANNER UTAMA ---
 def scan_market():
-    print("--- STOCKVISION AI: STARTED (SAFE MODE) ---")
+    print("--- STOCKVISION AI: STARTED (TIMESTAMP MODE) ---")
     
     if not DB_URL:
         print("[ERROR] DB_URL Kosong!")
         return
+
+    # Cek Database Tujuan (Masked)
+    db_host = DB_URL.split('@')[1].split('/')[0] if '@' in DB_URL else "UNKNOWN"
+    print(f"   [INFO] Mengirim data ke: ...@{db_host}")
 
     try:
         engine = create_engine(DB_URL)
@@ -78,24 +84,27 @@ def scan_market():
             ai_story = get_ai_analysis(ticker, last_price, last_rsi)
             print(f"   -> [AI SAYS]: {ai_story}")
 
-            # Simpan
+            # Simpan dengan JAM SEKARANG
+            now_wib = datetime.datetime.now()
+            
             data_to_save = pd.DataFrame({
                 'ticker': [ticker],
                 'pattern_name': [pattern_label],
                 'price': [last_price],
-                'story': [ai_story]
+                'story': [ai_story],
+                'created_at': [now_wib] # <--- INI PENTING
             })
             
             data_to_save.to_sql('detected_patterns', engine, if_exists='append', index=False)
-            print("   -> [DATABASE] Data tersimpan!")
+            print("   -> [DATABASE] Data tersimpan dengan Timestamp!")
             
-            # --- PENTING: Istirahat 10 Detik agar tidak error 429 ---
-            print("   ...Istirahat 10 detik (Anti-Banned)...")
-            time.sleep(10) 
+            # Istirahat 15 detik
+            print("   ...Istirahat 15 detik...")
+            time.sleep(15) 
 
         except Exception as e:
             print(f"   [ERROR] {ticker}: {e}")
-            time.sleep(10) # Tetap istirahat walaupun error
+            time.sleep(10)
 
 if __name__ == "__main__":
     scan_market()
