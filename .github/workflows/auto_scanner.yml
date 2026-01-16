@@ -22,7 +22,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install --upgrade pip
+          pip install yfinance pandas sqlalchemy psycopg2-binary python-dotenv google-genai
 
       - name: Run Market Scanner
         env:
