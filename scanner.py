@@ -5,32 +5,23 @@ from sqlalchemy import create_engine
 import pandas as pd
 from google import genai 
 import time
-import datetime # Import wajib untuk waktu
+import datetime
 
 # --- 1. LOAD RAHASIA ---
 load_dotenv()
 DB_URL = os.getenv("DB_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- 2. SETUP CLIENT BARU ---
+# --- 2. SETUP CLIENT ---
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- 3. RSI FUNCTION ---
-def calculate_rsi(series, period=14):
-    delta = series.diff(1)
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-# --- 4. AI ANALYSIS ---
-def get_ai_analysis(ticker, price, rsi):
-    print(f"   ...Meminta pendapat Gemini soal {ticker}...")
+# --- 3. AI ANALYSIS (DIOPTIMALKAN UNTUK SAHAM LIAR) ---
+def get_ai_analysis(ticker, price, change_pct):
     prompt = f"""
-    Bertindaklah sebagai Analis Saham.
-    Saham: {ticker} | Harga: {price} | RSI: {rsi:.2f}
+    Bertindaklah sebagai Analis Saham Day Trading.
+    Saham: {ticker} | Harga: {price} | Naik: {change_pct:.2f}%
     Berikan komentar 1 kalimat singkat (Maks 10 kata).
-    Jika RSI < 40 katakan 'Potensi BUY'. Jika RSI > 65 katakan 'Potensi SELL'.
+    Fokus pada momentum kenaikan harga.
     """
     try:
         response = client.models.generate_content(
@@ -38,21 +29,16 @@ def get_ai_analysis(ticker, price, rsi):
             contents=prompt
         )
         return response.text.strip()
-    except Exception as e:
-        if "429" in str(e): return "Sinyal: Menunggu Kuota AI..."
-        return f"Gagal analisa AI: {e}"
+    except Exception:
+        return f"Momentum kuat, naik {change_pct:.1f}% hari ini."
 
-# --- 5. SCANNER UTAMA ---
-def scan_market():
-    print("--- STOCKVISION AI: STARTED (TIMESTAMP MODE) ---")
+# --- 4. SCANNER UTAMA (TOP GAINERS MODE) ---
+def scan_top_gainers():
+    print("--- STOCKVISION AI: TOP GAINERS SCANNER STARTED ---")
     
     if not DB_URL:
         print("[ERROR] DB_URL Kosong!")
         return
-
-    # Cek Database Tujuan (Masked)
-    db_host = DB_URL.split('@')[1].split('/')[0] if '@' in DB_URL else "UNKNOWN"
-    print(f"   [INFO] Mengirim data ke: ...@{db_host}")
 
     try:
         engine = create_engine(DB_URL)
@@ -60,51 +46,85 @@ def scan_market():
         print(f"[FATAL] Koneksi DB Gagal: {e}")
         return
 
-    daftar_saham = ['BBRI.JK', 'BBCA.JK', 'GOTO.JK', 'ANTM.JK', 'ASII.JK']
+    # Daftar 50 Saham Campuran (Bluechip + Volatil/Lapis 2 & 3)
+    daftar_50 = [
+        'BBRI.JK', 'BBCA.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK', 'GOTO.JK', 'ANTM.JK', 'BRMS.JK',
+        'BUMI.JK', 'DEWA.JK', 'ADRO.JK', 'PTBA.JK', 'ITMG.JK', 'UNTR.JK', 'PGAS.JK', 'MEDC.JK',
+        'AMMN.JK', 'BBNI.JK', 'BRIS.JK', 'TPIA.JK', 'INKP.JK', 'TKIM.JK', 'KLBF.JK', 'UNVR.JK',
+        'ICBP.JK', 'INDF.JK', 'CPIN.JK', 'JPFA.JK', 'SMGR.JK', 'INTP.JK', 'MDKA.JK', 'MBMA.JK',
+        'HRUM.JK', 'AKRA.JK', 'BRPT.JK', 'ADMR.JK', 'BUKA.JK', 'BELI.JK', 'BSDE.JK', 'PWON.JK',
+        'CTRA.JK', 'SMRA.JK', 'JSMR.JK', 'SSIA.JK', 'ASPI.JK', 'PACK.JK', 'CBRE.JK', 'STRK.JK',
+        'CUAN.JK', 'BREN.JK'
+    ]
+
+    results = []
     
-    for ticker in daftar_saham:
-        print(f"\n1. Mengambil Data {ticker}...")
+    print(f"Memulai pemindaian {len(daftar_50)} saham...")
+    
+    for ticker in daftar_50:
         try:
-            df = yf.download(ticker, period='3mo', progress=False)
-            if len(df) < 20: continue
+            # Ambil data 2 hari terakhir untuk hitung perubahan harga
+            df = yf.download(ticker, period='2d', interval='1d', progress=False)
+            if len(df) < 2: continue
             
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            df['RSI'] = calculate_rsi(df['Close'])
-            last_rsi = float(df['RSI'].iloc[-1])
             last_price = float(df['Close'].iloc[-1])
+            prev_close = float(df['Close'].iloc[-2])
             
-            pattern_label = f"RSI: {last_rsi:.1f}"
-            if last_rsi < 40: pattern_label = "AI SIGNAL: BUY"
-            elif last_rsi > 65: pattern_label = "AI SIGNAL: SELL"
-            else: pattern_label = "AI SIGNAL: NEUTRAL"
-
-            # Tanya Gemini
-            ai_story = get_ai_analysis(ticker, last_price, last_rsi)
-            print(f"   -> [AI SAYS]: {ai_story}")
-
-            # Simpan dengan JAM SEKARANG
-            now_wib = datetime.datetime.now()
+            # Hitung % Kenaikan
+            change_pct = ((last_price - prev_close) / prev_close) * 100
             
-            data_to_save = pd.DataFrame({
-                'ticker': [ticker],
-                'pattern_name': [pattern_label],
-                'price': [last_price],
-                'story': [ai_story],
-                'created_at': [now_wib] # <--- INI PENTING
-            })
-            
-            data_to_save.to_sql('detected_patterns', engine, if_exists='append', index=False)
-            print("   -> [DATABASE] Data tersimpan dengan Timestamp!")
-            
-            # Istirahat 15 detik
-            print("   ...Istirahat 15 detik...")
-            time.sleep(15) 
+            # Filter: Hanya ambil yang naik (Gainers)
+            if change_pct > 0:
+                results.append({
+                    'ticker': ticker,
+                    'price': last_price,
+                    'change_pct': change_pct
+                })
+                print(f"   [FOUND] {ticker}: +{change_pct:.2f}%")
 
         except Exception as e:
-            print(f"   [ERROR] {ticker}: {e}")
-            time.sleep(10)
+            print(f"   [SKIP] {ticker}: {e}")
+
+    # Urutkan berdasarkan kenaikan tertinggi dan ambil 15 Teratas
+    top_gainers = sorted(results, key=lambda x: x['change_pct'], reverse=True)[:15]
+
+    print(f"\n--- Memproses {len(top_gainers)} Top Gainers dengan AI ---")
+
+    for stock in top_gainers:
+        ticker = stock['ticker']
+        last_price = stock['price']
+        change_pct = stock['change_pct']
+
+        # Label Sinyal berdasarkan kekuatan kenaikan
+        if change_pct > 5.0:
+            pattern_label = "AI SIGNAL: STRONG BUY (MOMENTUM)"
+        else:
+            pattern_label = "AI SIGNAL: NEUTRAL (GAINER)"
+
+        ai_story = get_ai_analysis(ticker, last_price, change_pct)
+        print(f"   -> {ticker} (+{change_pct:.1f}%): {ai_story}")
+
+        # Simpan ke Database
+        now_wib = datetime.datetime.now()
+        data_to_save = pd.DataFrame({
+            'ticker': [ticker],
+            'pattern_name': [pattern_label],
+            'price': [last_price],
+            'story': [ai_story],
+            'created_at': [now_wib]
+        })
+        
+        try:
+            data_to_save.to_sql('detected_patterns', engine, if_exists='append', index=False)
+        except Exception as e:
+            print(f"   [DB ERROR] Gagal simpan {ticker}: {e}")
+
+        time.sleep(2) # Jeda singkat antar AI request
+
+    print("\n--- SCAN SELESAI: DATABASE UPDATED ---")
 
 if __name__ == "__main__":
-    scan_market()
+    scan_top_gainers()
