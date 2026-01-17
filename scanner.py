@@ -12,10 +12,8 @@ load_dotenv()
 DB_URL = os.getenv("DB_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- 2. SETUP CLIENT ---
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- 3. AI ANALYSIS (DIOPTIMALKAN UNTUK SAHAM LIAR) ---
 def get_ai_analysis(ticker, price, change_pct):
     prompt = f"""
     Bertindaklah sebagai Analis Saham Day Trading.
@@ -32,9 +30,8 @@ def get_ai_analysis(ticker, price, change_pct):
     except Exception:
         return f"Momentum kuat, naik {change_pct:.1f}% hari ini."
 
-# --- 4. SCANNER UTAMA (TOP GAINERS MODE) ---
 def scan_top_gainers():
-    print("--- STOCKVISION AI: TOP GAINERS SCANNER STARTED ---")
+    print("--- STOCKVISION AI: TOP GAINERS SCANNER (DEBUG MODE) ---")
     
     if not DB_URL:
         print("[ERROR] DB_URL Kosong!")
@@ -46,7 +43,6 @@ def scan_top_gainers():
         print(f"[FATAL] Koneksi DB Gagal: {e}")
         return
 
-    # Daftar 50 Saham Campuran (Bluechip + Volatil/Lapis 2 & 3)
     daftar_50 = [
         'BBRI.JK', 'BBCA.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK', 'GOTO.JK', 'ANTM.JK', 'BRMS.JK',
         'BUMI.JK', 'DEWA.JK', 'ADRO.JK', 'PTBA.JK', 'ITMG.JK', 'UNTR.JK', 'PGAS.JK', 'MEDC.JK',
@@ -63,9 +59,13 @@ def scan_top_gainers():
     
     for ticker in daftar_50:
         try:
-            # Ambil data 2 hari terakhir untuk hitung perubahan harga
-            df = yf.download(ticker, period='2d', interval='1d', progress=False)
-            if len(df) < 2: continue
+            # PERBAIKAN: Ambil 5 hari (period='5d') biar aman saat Weekend
+            df = yf.download(ticker, period='5d', interval='1d', progress=False)
+            
+            if len(df) < 2: 
+                # Debugging: Kasih tahu kalau data kosong
+                # print(f"   [SKIP] {ticker}: Data tidak cukup ({len(df)} row)")
+                continue
             
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -86,7 +86,7 @@ def scan_top_gainers():
                 print(f"   [FOUND] {ticker}: +{change_pct:.2f}%")
 
         except Exception as e:
-            print(f"   [SKIP] {ticker}: {e}")
+            print(f"   [ERROR] {ticker}: {e}")
 
     # Urutkan berdasarkan kenaikan tertinggi dan ambil 15 Teratas
     top_gainers = sorted(results, key=lambda x: x['change_pct'], reverse=True)[:15]
@@ -98,7 +98,6 @@ def scan_top_gainers():
         last_price = stock['price']
         change_pct = stock['change_pct']
 
-        # Label Sinyal berdasarkan kekuatan kenaikan
         if change_pct > 5.0:
             pattern_label = "AI SIGNAL: STRONG BUY (MOMENTUM)"
         else:
@@ -107,7 +106,6 @@ def scan_top_gainers():
         ai_story = get_ai_analysis(ticker, last_price, change_pct)
         print(f"   -> {ticker} (+{change_pct:.1f}%): {ai_story}")
 
-        # Simpan ke Database
         now_wib = datetime.datetime.now()
         data_to_save = pd.DataFrame({
             'ticker': [ticker],
@@ -122,7 +120,7 @@ def scan_top_gainers():
         except Exception as e:
             print(f"   [DB ERROR] Gagal simpan {ticker}: {e}")
 
-        time.sleep(2) # Jeda singkat antar AI request
+        time.sleep(2) 
 
     print("\n--- SCAN SELESAI: DATABASE UPDATED ---")
 
