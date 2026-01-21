@@ -15,53 +15,51 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY_PRIBADI")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- 2. FUNGSI KIRIM TELEGRAM ---
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
     except Exception as e:
         print(f"Gagal kirim Telegram: {e}")
 
-# --- 3. ANALISIS AI SWING (VERSI PERBAIKAN) ---
+# --- 2. FUNGSI ANALISIS AI (OPTIMASI FREE TIER) ---
 def get_ai_swing_advice(ticker, price):
-    print(f"   🤖 AI sedang berpikir tentang {ticker}...") # Log agar tahu robot jalan
+    print(f"   🤖 AI sedang menganalisis {ticker}...")
     
+    # Prompt padat untuk menghemat token dan mempercepat respon
     prompt = f"""
-    Kamu Advisor Pribadi. Saham {ticker} (Harga {price}) teknikal UPTREND.
-    Googling berita seminggu terakhir. Ada sentimen negatif fatal?
-    JAWAB SINGKAT (Maks 10 kata):
-    - Jika Aman: "✅ AMAN. [Alasan]"
-    - Jika Bahaya: "⚠️ WASPADA. [Alasan]"
+    Analis emiten {ticker} (Harga {price}). 
+    Cari berita seminggu terakhir. Apakah ada isu PKPU, korupsi, atau laba anjlok >50%?
+    Jawab singkat: '✅ AMAN. [Alasan]' atau '⚠️ WASPADA. [Isu]'. Maksimal 10 kata.
     """
-    try:
-        # PERBAIKAN 1: Ganti ke model stabil 'gemini-1.5-flash'
-        response = client.models.generate_content(
-            model='gemini-1.5-flash', 
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                response_modalities=["TEXT"]
-            )
-        )
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.text: return part.text.strip()
-        return "Info berita minim."
-    except Exception as e:
-        # Tampilkan error asli di log biar kita tahu kenapa
-        print(f"   [AI ERROR] {ticker}: {e}") 
-        return "Skip (Limit Kuota/Sinyal)"
-
-# --- 4. SCANNER UTAMA ---
-def scan_my_portfolio():
-    print("--- 🕵️‍♂️ PRIVATE SWING SCANNER MULAI ---")
     
+    # Strategi Retry jika kena Limit Kuota
+    for attempt in range(2):
+        try:
+            response = client.models.generate_content(
+                model='gemini-1.5-flash', # Model tercepat & jatah paling banyak di Free Tier
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    request_options={"timeout": 30000}
+                )
+            )
+            if response.candidates and response.candidates[0].content.parts:
+                return response.candidates[0].content.parts[0].text.strip()
+        except Exception as e:
+            if "429" in str(e): # Error kuota habis
+                print(f"   ⚠️ Limit tercapai, menunggu 20 detik untuk {ticker}...")
+                time.sleep(20)
+            else:
+                print(f"   ❌ Gagal pada {ticker}: {e}")
+    return "Skip (Kuota Limit)"
+
+# --- 3. SCANNER UTAMA ---
+def scan_my_portfolio():
+    print("--- 🕵️‍♂️ PRIVATE SWING SCANNER (FREE TIER OPTIMIZED) ---")
+    
+    # Daftar Saham Pilihan
     watchlist = [
         'BBRI.JK', 'BBCA.JK', 'BMRI.JK', 'BBNI.JK', 'TLKM.JK', 'ASII.JK',
         'UNTR.JK', 'ICBP.JK', 'INDF.JK', 'KLBF.JK', 'MDKA.JK', 'ANTM.JK',
@@ -70,66 +68,47 @@ def scan_my_portfolio():
     ]
     
     candidates = []
-
     for ticker in watchlist:
         try:
             df = yf.download(ticker, period='3mo', interval='1d', progress=False)
             if len(df) < 50: continue
-            
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
             df['MA20'] = df['Close'].rolling(window=20).mean()
-            
             delta = df['Close'].diff(1)
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
 
-            last_price = float(df['Close'].iloc[-1])
-            ma20 = float(df['MA20'].iloc[-1])
+            lp = float(df['Close'].iloc[-1])
+            ma = float(df['MA20'].iloc[-1])
             rsi = float(df['RSI'].iloc[-1])
 
-            if last_price > ma20 and 40 <= rsi <= 65:
-                jarak_ma = ((last_price - ma20) / ma20) * 100
-                
-                candidates.append({
-                    'ticker': ticker,
-                    'price': last_price,
-                    'rsi': rsi,
-                    'jarak': jarak_ma
-                })
-                print(f"   [CANDIDATE FOUND] {ticker}")
-
-        except Exception: continue
+            # Filter Teknis: Uptrend & RSI Sehat
+            if lp > ma and 40 <= rsi <= 65:
+                candidates.append({'ticker': ticker, 'price': lp, 'rsi': rsi})
+                print(f"   [CANDIDATE] {ticker}")
+        except: continue
 
     if candidates:
-        candidates = sorted(candidates, key=lambda x: x['rsi'])[:5]
+        # PENTING: Batasi maksimal 3 saham agar jatah Google Search tidak habis
+        candidates = sorted(candidates, key=lambda x: x['rsi'])[:3]
         
-        report = "🦅 *LAPORAN SWING PRIBADI*\n"
-        report += f"📅 {time.strftime('%d-%m-%Y')}\n\n"
-        
+        report = "🦅 *LAPORAN SWING PRIBADI*\n\n"
         for stock in candidates:
-            ticker = stock['ticker']
-            
-            # Panggil AI
-            ai_advice = get_ai_swing_advice(ticker, stock['price'])
-            
-            report += f"💎 *{ticker}* (Rp {stock['price']:.0f})\n"
+            res = get_ai_swing_advice(stock['ticker'], stock['price'])
+            report += f"💎 *{stock['ticker']}* (Rp {stock['price']:.0f})\n"
             report += f"   • RSI: {stock['rsi']:.1f}\n"
-            report += f"   • Posisi: {stock['jarak']:.1f}% di atas MA20\n"
-            report += f"   • 🤖 {ai_advice}\n\n"
+            report += f"   • 🤖 {res}\n\n"
             
-            # PERBAIKAN 2: Istirahat 5 detik agar Google tidak marah (Rate Limit)
-            print("   ...Istirahat 5 detik...")
-            time.sleep(5) 
+            # Jeda 15 detik antar saham agar aman dari deteksi bot Google
+            time.sleep(15) 
         
-        report += "_Disarankan HOLD 1-2 Minggu selama harga diatas MA20._"
         send_telegram(report)
-        print("Laporan terkirim ke Telegram!")
+        print("Selesai.")
     else:
-        send_telegram("Market sedang jelek/sideways. Tidak ada sinyal swing hari ini. 😴")
+        send_telegram("Tidak ada sinyal hari ini. 😴")
 
 if __name__ == "__main__":
     scan_my_portfolio()
