@@ -57,7 +57,7 @@ def get_ai_swing_advice(ticker, price, rsi, ma20):
     
     try:
         response = client.models.generate_content(
-            model='gemini-1.5-flash', 
+            model='gemini-flash-latest', 
             contents=prompt,
             config=types.GenerateContentConfig(
                 # INI BUKTI BAHWA DIA TETAP CARI BERITA
