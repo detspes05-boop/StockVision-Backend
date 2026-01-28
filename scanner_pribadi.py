@@ -25,27 +25,47 @@ def send_telegram(message):
         print(f"   ❌ Gagal kirim Telegram: {e}")
 
 # --- 2. MAKRO EKONOMI ---
+# --- UPDATE FUNGSI INI (VERSI ANTI-GAGAL DENGAN RETRY) ---
+
 def get_global_market_sentiment():
     print("\n🌍 Membaca kondisi pasar Global & IHSG...")
+    
     prompt = """
     Analisis singkat pasar hari ini: IHSG, Rupiah (IDR/USD), dan Harga Komoditas (Emas/Minyak/CPO).
     Apakah Risk-On (Berani Beli) atau Risk-Off (Hati-hati)?
     Jawab 1 kalimat. Contoh: "Pasar Risk-Off, IHSG merah -1%, Rupiah melemah."
     """
-    try:
-        response = client.models.generate_content(
-            model='gemini-flash-latest', 
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.1
+    
+    # MEKANISME RETRY (Loop 3x seperti di fungsi analisis saham)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-flash-latest',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    temperature=0.1
+                )
             )
-        )
-        if response.candidates and response.candidates[0].content.parts:
-            sentiment = response.candidates[0].content.parts[0].text.strip()
-            print(f"   👉 Sentimen: {sentiment}")
-            return sentiment
-    except: return "Pasar Netral (Data Gagal)"
+            if response.candidates and response.candidates[0].content.parts:
+                sentiment = response.candidates[0].content.parts[0].text.strip()
+                print(f"   👉 Sentimen: {sentiment}")
+                return sentiment
+                
+        except Exception as e:
+            # Jika error karena Kuota Habis (429) atau Masalah Koneksi
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "500" in str(e):
+                wait_time = 30
+                print(f"   ⏳ Koneksi/Kuota Sibuk! Menunggu {wait_time} detik... ({attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+                continue # Coba lagi
+            else:
+                print(f"   ⚠️ Error Sentimen: {e}")
+                break # Error lain (misal API Key salah), stop.
+
+    # Jika sudah dicoba 3x masih gagal juga
+    return "Pasar Netral (Data Tidak Terbaca)"
 
 # --- 3. OTAK PRO (AI + RISK CALCULATION + STRICT TABLE) ---
 def get_pro_swing_advice(ticker, price, rsi, ma20, volume_status, market_context):
